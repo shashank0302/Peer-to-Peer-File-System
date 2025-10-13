@@ -11,9 +11,9 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 try:
-    from .logging_config import init_peer_logger, get_peer_logger
+    from .logging_config import init_peer_logger
 except ImportError:
-    from logging_config import init_peer_logger, get_peer_logger
+    from logging_config import init_peer_logger
 
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,7 @@ class PeerClient:
 	def server_address(self) -> Optional[Tuple[str, int]]:
 		return self._server.address()
 
-	async def start(self, host: str = "127.0.0.1", port: int = 0) -> None:
+	async def start(self, host: str = "0.0.0.0", port: int = 0) -> None:
 		await self._server.start(host, port)
 
 	async def stop(self) -> None:
@@ -168,8 +168,10 @@ class PeerClient:
 		self._tracker_writer = None
 		await self._server.stop()
 
-	async def connect_tracker(self, host: str, port: int) -> None:
+	async def connect_tracker(self, host: str, port: int,peer_host: str = "0.0.0.0") -> None:
 		try:
+			await self._server.stop()
+			await self._server.start(peer_host,0)
 			self._tracker_reader, self._tracker_writer = await asyncio.open_connection(host, port)
 			await self._write_tracker(
 				{

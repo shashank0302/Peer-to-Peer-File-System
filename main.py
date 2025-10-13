@@ -94,14 +94,15 @@ async def peer_main():
 		
 		try:
 			if cmd.startswith('connect '):
-				parts = cmd.split(' ', 2)
-				if len(parts) != 3:
-					print('Error: Usage: connect <ip> <port>')
+				parts = cmd.split(' ', 3)
+				if len(parts) < 3:
+					print('Error: Usage: connect <ip> <port> [peer_host]')
 					continue
-				_, ip, port = parts
+				_, ip, port = parts[:3]
+				peer_host = parts[3] if len(parts) > 3 else "0.0.0.0"
 				try:
 					port_num = int(port)
-					await peer.connect_tracker(ip, port_num)
+					await peer.connect_tracker(ip, port_num,peer_host)
 					print('connected')
 				except ValueError:
 					print('Error: Port must be a number')
@@ -155,7 +156,7 @@ async def peer_main():
 				return
 			else:
 				print('Unknown command. Available commands:')
-				print('  connect <ip> <port> - Connect to tracker')
+				print('  connect <ip> <port> [peer_host] - Connect to tracker')
 				print('  publish <abs_path> - Publish a file')
 				print('  list_files - List available files')
 				print('  download <file> <abs_dest> - Download a file')
