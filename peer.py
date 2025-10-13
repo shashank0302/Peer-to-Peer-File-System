@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import socket
 
 try:
     from .logging_config import init_peer_logger
@@ -168,15 +169,24 @@ class PeerClient:
 		self._tracker_writer = None
 		await self._server.stop()
 
-	async def connect_tracker(self, host: str, port: int,peer_host: str = "0.0.0.0") -> None:
+	async def connect_tracker(self, host: str, port: int, peer_host: str = "0.0.0.0") -> None:
 		try:
+			# Restart peer server with correct host
 			await self._server.stop()
-			await self._server.start(peer_host,0)
+			await self._server.start(peer_host, 0)
+			
+			# Get the actual external IP for registration
+			
+			s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			s.connect(("8.8.8.8", 80))
+			external_ip = s.getsockname()[0]
+			s.close()
+			
 			self._tracker_reader, self._tracker_writer = await asyncio.open_connection(host, port)
 			await self._write_tracker(
 				{
 					"type": "REQUEST_REGISTER",
-					"address": list(self.server_address()),
+					"address": [external_ip, self._server.address()[1]],  # Use external IP
 				}
 			)
 			await _read_message(self._tracker_reader)
