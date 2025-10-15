@@ -173,8 +173,11 @@ def main():
 	opt = sys.argv[1]
 	if opt == 'tracker':
 		asyncio.run(tracker_main())
-	else:
+	elif opt == 'peer':
 		asyncio.run(peer_main())
+	else:
+		print('Usage: python main.py tracker|peer')
+		sys.exit(1)
 
 
 if __name__ == '__main__':
