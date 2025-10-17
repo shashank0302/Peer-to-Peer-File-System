@@ -4,6 +4,7 @@ from tracker import Tracker
 from peer import PeerClient
 
 
+#CLI for tracker
 async def tracker_main():
 	trk = Tracker()
 	print('Tracker> start <host> <port> | list_files | list_peers | list_chunkinfo | exit')
@@ -12,7 +13,6 @@ async def tracker_main():
 			cmd = (await asyncio.to_thread(input, 'Tracker> ')).strip()
 		except (EOFError, KeyboardInterrupt):
 			cmd = 'exit'
-		
 		try:
 			if cmd.startswith('start '):
 				parts = cmd.split(' ', 2)
@@ -78,6 +78,8 @@ async def tracker_main():
 			print('Tracker continues running...')
 
 
+
+#CLI for peer
 async def peer_main():
 	peer = PeerClient()
 	await peer.start("127.0.0.1", 0)
@@ -162,6 +164,7 @@ async def peer_main():
 			print('Peer continues running...')
 
 
+#main function
 def main():
 	if len(sys.argv) < 2:
 		print('Usage: python main.py tracker|peer')
