@@ -425,6 +425,11 @@ class PeerClient:
 					calculated_digest = await asyncio.to_thread(verify_hash)
 					
 					if calculated_digest != digest:
+						# Log corruption detection
+						chunkLog.write(f"CORRUPTION DETECTED - Chunk {next_chunk}: Hash mismatch from {selected_peer}\n")
+						chunkLog.write(f"    Expected: {digest[:32]}...\n")
+						chunkLog.write(f"    Got:      {calculated_digest[:32]}...\n")
+						chunkLog.flush()
 						async with completed_chunks_lock:
 							in_flight.discard(next_chunk)
 							# Will be retried on next worker iteration (dynamic selection)
