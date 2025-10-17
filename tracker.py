@@ -33,8 +33,9 @@ class Tracker:
 		# writer -> peer_address_json
 		self._peers: Dict[asyncio.StreamWriter, str] = {}
 		
-		# filename -> { size: int, total_chunknum: int }
-		self.fileList: Dict[str, Dict[str, int]] = {}
+		# filename -> { size: int, total_chunknum: int, org_hashes: List[str] }
+		# org_hashes contains the authoritative SHA256 hash for each chunk
+		self.fileList: Dict[str, Dict] = {}
 
 		# filename -> { peer_address_json -> List[int] }
 		self.chunkInfo: Dict[str, Dict[str, List[int]]] = {}
@@ -95,14 +96,26 @@ class Tracker:
 				elif type == "REQUEST_PUBLISH":
 					filename = msg["filename"]
 					fileinfo = msg["fileinfo"]
+					org_hashes = msg.get("org_hashes", [])
 
 					if filename in self.fileList:
 						await self.write(writer, {"type": "REPLY_PUBLISH", "result": False})
 						continue
 					
+					# Validate that org_hashes count matches total_chunknum
+					total_chunks = int(fileinfo["total_chunknum"])
+					if len(org_hashes) != total_chunks:
+						await self.write(writer, {
+							"type": "REPLY_PUBLISH",
+							"result": False,
+							"error": f"org hashes count mismatch: expected {total_chunks}, got {len(org_hashes)}"
+						})
+						continue
+					
 					self.fileList[filename] = {
 						"size": int(fileinfo["size"]),
-						"total_chunknum": int(fileinfo["total_chunknum"]),
+						"total_chunknum": total_chunks,
+						"org_hashes": org_hashes,  # Store authoritative hashes
 					}
 					# seed with publisher owning all chunks
 					owner = self._peers.get(writer)
@@ -110,7 +123,7 @@ class Tracker:
 					if owner is None:
 						owner = json.dumps([peername[0], peername[1]])
 
-					self.chunkInfo[filename] = {owner: list(range(self.fileList[filename]["total_chunknum"]))}
+					self.chunkInfo[filename] = {owner: list(range(total_chunks))}
 					await self.write(writer, {"type": "REPLY_PUBLISH", "result": True})
 				
 				elif type == "REQUEST_FILE_LIST":
@@ -119,12 +132,13 @@ class Tracker:
 				elif type == "REQUEST_FILE_LOCATION":
 					filename = msg["filename"]
 					chunkinfo = self.chunkInfo[filename]
+					fileinfo = self.fileList[filename]
 					
 					await self.write(
 						writer,
 						{
 							"type": "REPLY_FILE_LOCATION",
-							"fileinfo": self.fileList[filename],
+							"fileinfo": fileinfo,  # Includes org_hashes
 							"chunkinfo": chunkinfo,
 						},
 					)

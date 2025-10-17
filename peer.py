@@ -208,15 +208,38 @@ class PeerClient:
 		filename = os.path.basename(abs_path)
 		file_size = os.path.getsize(abs_path)
 		total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+		
+		# Calculate org hashes for all chunks
+		print(f"Calculating integrity hashes for {filename} ({total_chunks} chunks)...")
+		
+		def calculate_org_hashes():
+			org_hashes = []
+			with open(abs_path, "rb") as f:
+				for chunk_idx in range(total_chunks):
+					f.seek(chunk_idx * CHUNK_SIZE)
+					chunk_data = f.read(CHUNK_SIZE)
+					chunk_hash = hashlib.sha256(chunk_data).hexdigest()
+					org_hashes.append(chunk_hash)
+			return org_hashes
+		
+		org_hashes = await asyncio.to_thread(calculate_org_hashes)
+		print(f"Calculated {len(org_hashes)} org hashes")
+		
 		self.handler.add_file(filename, abs_path)
 		await self.write_tracker(
 			{
 				"type": "REQUEST_PUBLISH",
 				"filename": filename,
 				"fileinfo": {"size": file_size, "total_chunknum": total_chunks},
+				"org_hashes": org_hashes,  # Send authoritative hashes to tracker
 			}
 		)
-		await read_message(self.tracker_reader)
+		reply = await read_message(self.tracker_reader)
+		
+		# Check if publish failed
+		if not reply.get("result", False):
+			error_msg = reply.get("error", "Unknown error")
+			raise RuntimeError(f"Failed to publish {filename}: {error_msg}")
 
 	async def list_files(self) -> Dict[str, Dict[str, int]]:
 		await self.write_tracker({"type": "REQUEST_FILE_LIST"})
@@ -251,12 +274,20 @@ class PeerClient:
 		total = int(fileinfo["total_chunknum"])
 		file_size = int(fileinfo["size"])
 		
+		# Cache org hashes for integrity verification
+		org_hashes = fileinfo.get("org_hashes", [])
+		if len(org_hashes) != total:
+			raise RuntimeError(f"org hash count mismatch: expected {total}, got {len(org_hashes)}")
+		
+		print(f"Cached {len(org_hashes)} org hashes for integrity verification")
+		
 		# Create demo log file
 		chunkLog = open("ChunkDownload.log", "a")
 		chunkLog.write(f"\n{'='*60}\n")
 		chunkLog.write(f"Download started: {filename} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 		chunkLog.write(f"Peer ID: {self.peer_id}\n")
 		chunkLog.write(f"File size: {file_size:,} bytes, {total} chunks\n")
+		chunkLog.write(f"org hashes cached: {len(org_hashes)} (integrity checking enabled)\n")
 		chunkLog.write(f"{'='*60}\n\n")
 		chunkLog.flush()
 		
@@ -292,6 +323,8 @@ class PeerClient:
 		# Parallel download state
 		completed_chunks: Set[int] = set()
 		in_flight: Set[int] = set()  # Chunks currently being downloaded
+		failed_tries: Dict[int, Set[str]] = defaultdict(set)  # Track which peers failed for each chunk
+		fatal_error: Optional[RuntimeError] = None  # Shared error state
 		completed_chunks_lock = asyncio.Lock()
 		progress_lock = asyncio.Lock()
 		
@@ -300,9 +333,9 @@ class PeerClient:
 		
 		async def download_worker(worker_id: int):
 			"""Worker function for parallel chunk downloads"""
-			nonlocal progress_counter
+			nonlocal progress_counter, fatal_error
 			
-			while len(completed_chunks) < total:
+			while len(completed_chunks) < total and fatal_error is None:
 				# Dynamically select rarest available chunk
 				async with completed_chunks_lock:
 					# Find chunks not yet downloaded or in-flight
@@ -408,7 +441,7 @@ class PeerClient:
 						continue
 					
 					data = bytes(reply["data"])
-					digest = reply["digest"]
+					digest = reply["digest"]  # Hash from serving peer (for logging only)
 					
 					# Log chunk download to demo file with source and destination
 					dest_address = f'["{self._address[0]}", {self._address[1]}]'
@@ -419,20 +452,31 @@ class PeerClient:
 					writer.close()
 					await writer.wait_closed()
 					
-					# Verify hash
+					# Verify hash against org HASH (not peer-provided hash)
 					def verify_hash():
 						return hashlib.sha256(data).hexdigest()
 					calculated_digest = await asyncio.to_thread(verify_hash)
+					org_hash = org_hashes[next_chunk]
 					
-					if calculated_digest != digest:
+					if calculated_digest != org_hash:
 						# Log corruption detection
-						chunkLog.write(f"CORRUPTION DETECTED - Chunk {next_chunk}: Hash mismatch from {selected_peer}\n")
-						chunkLog.write(f"    Expected: {digest[:32]}...\n")
-						chunkLog.write(f"    Got:      {calculated_digest[:32]}...\n")
+						chunkLog.write(f"INTEGRITY VIOLATION - Chunk {next_chunk}: Hash mismatch from {selected_peer}\n")
+						chunkLog.write(f"    org hash:    {org_hash[:32]}...\n")
+						chunkLog.write(f"    Calculated:     {calculated_digest[:32]}...\n")
+						chunkLog.write(f"    Peer claimed:   {digest[:32]}...\n")
 						chunkLog.flush()
+						print(f"\n[WARNING] Integrity violation detected for chunk {next_chunk} from {selected_peer}")
 						async with completed_chunks_lock:
 							in_flight.discard(next_chunk)
-							# Will be retried on next worker iteration (dynamic selection)
+							failed_tries[next_chunk].add(selected_peer)
+							
+							# Check if all peers have been tried and all failed
+							available_peers_for_chunk = set(chunk_owners[next_chunk])
+							if failed_tries[next_chunk] >= available_peers_for_chunk:
+								chunkLog.write(f"FATAL: All peers have corrupted data for chunk {next_chunk}\n")
+								chunkLog.flush()
+								fatal_error = RuntimeError(f"File corrupted: No peer has valid data for chunk {next_chunk}. All {len(available_peers_for_chunk)} peers failed integrity check.")
+								return  # Exit worker immediately
 						continue
 					
 					# Write chunk to file
@@ -505,7 +549,7 @@ class PeerClient:
 		
 		async def manage_workers():
 			"""Refresh peer information periodically"""
-			while len(completed_chunks) < total:
+			while len(completed_chunks) < total and fatal_error is None:
 				# Refresh peer information from tracker
 				await refresh_peer_info()
 				await asyncio.sleep(1.0)  # Refresh every 1 second (dynamic calculation handles staleness)
@@ -518,6 +562,11 @@ class PeerClient:
 		
 		# Wait for all workers to complete
 		await asyncio.gather(*workers, worker_manager, return_exceptions=True)
+		
+		# Check for fatal errors (corruption detected)
+		if fatal_error is not None:
+			chunkLog.close()
+			raise fatal_error
 		
 		# Finalize download
 		os.replace(dest_path + ".temp", dest_path)
