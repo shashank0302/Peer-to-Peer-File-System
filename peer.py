@@ -372,10 +372,21 @@ class PeerClient:
 					continue
 				
 				# Select peer for this chunk
-				chunk_peers = chunk_owners[next_chunk]
+				all_chunk_peers = chunk_owners[next_chunk]
+				
+				# Filter out peers that have already failed integrity check for this chunk
+				chunk_peers = [p for p in all_chunk_peers if p not in failed_tries[next_chunk]]
+				
 				if not chunk_peers:
 					async with completed_chunks_lock:
 						in_flight.discard(next_chunk)
+						# Check if all peers have been tried and all failed
+						available_peers_for_chunk = set(all_chunk_peers)
+						if failed_tries[next_chunk] >= available_peers_for_chunk:
+							chunkLog.write(f"FATAL: All peers have corrupted data for chunk {next_chunk}\n")
+							chunkLog.flush()
+							fatal_error = RuntimeError(f"File corrupted: No peer has valid data for chunk {next_chunk}. All {len(available_peers_for_chunk)} peers failed integrity check.")
+							return  # Exit worker immediately
 					continue
 				
 				for peer_addr in chunk_peers:
@@ -469,14 +480,6 @@ class PeerClient:
 						async with completed_chunks_lock:
 							in_flight.discard(next_chunk)
 							failed_tries[next_chunk].add(selected_peer)
-							
-							# Check if all peers have been tried and all failed
-							available_peers_for_chunk = set(chunk_owners[next_chunk])
-							if failed_tries[next_chunk] >= available_peers_for_chunk:
-								chunkLog.write(f"FATAL: All peers have corrupted data for chunk {next_chunk}\n")
-								chunkLog.flush()
-								fatal_error = RuntimeError(f"File corrupted: No peer has valid data for chunk {next_chunk}. All {len(available_peers_for_chunk)} peers failed integrity check.")
-								return  # Exit worker immediately
 						continue
 					
 					# Write chunk to file
@@ -568,7 +571,10 @@ class PeerClient:
 			chunkLog.close()
 			raise fatal_error
 		
-		# Finalize download
+		# Finalize download - truncate to actual file size
+		with open(dest_path + ".temp", "r+b") as f:
+			f.truncate(file_size)
+		
 		os.replace(dest_path + ".temp", dest_path)
 		self.handler.add_file(filename, dest_path)
 		
