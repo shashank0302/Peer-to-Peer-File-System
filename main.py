@@ -1,11 +1,7 @@
 import asyncio
 import sys
-import logging
 from tracker import Tracker
 from peer import PeerClient
-
-
-logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
 
 
 async def tracker_main():
